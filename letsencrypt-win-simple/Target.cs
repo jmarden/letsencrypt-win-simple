@@ -30,9 +30,9 @@ namespace LetsEncrypt.ACME.Simple
         public string WebRootPath { get; set; }
         public long SiteId { get; set; }
         public List<string> AlternativeNames { get; set; }
+        public bool SAN { get; set; }
         public string PluginName { get; set; } = "IIS";
         public Plugin Plugin => Plugins[PluginName];
-
         public override string ToString() => $"{PluginName} {Host} ({WebRootPath})";
     }
 }

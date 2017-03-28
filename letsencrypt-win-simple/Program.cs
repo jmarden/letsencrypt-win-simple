@@ -166,7 +166,7 @@ namespace LetsEncrypt.ACME.Simple
                     }
                 }
             }
-            catch (Exception e)
+           catch (Exception e)
             {
                 Log.Error("Error {@e}", e);
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -260,6 +260,7 @@ namespace LetsEncrypt.ACME.Simple
             else
             {
                 Target binding = GetBindingBySiteId(targets, targetId);
+                binding.SAN = true;
                 binding.Plugin.Auto(binding);
             }
         }
@@ -962,7 +963,13 @@ namespace LetsEncrypt.ACME.Simple
                         addTask = true;
                         Console.WriteLine($" Deleting existing Task {taskName} from Windows Task Scheduler.");
                         Log.Information("Deleting existing Task {taskName} from Windows Task Scheduler.", taskName);
-                        taskService.RootFolder.DeleteTask(taskName, false);
+                        try {
+                            taskService.RootFolder.DeleteTask(taskName, false);
+
+                        } catch (Exception voE) {
+                            Console.WriteLine($"Error deleting task.\nMessage: {voE.Message}");
+                            Log.Error("Error deleting task. Message: {@voE}", voE);
+                        }
                     }
 
                     if (addTask == true) {
@@ -980,10 +987,16 @@ namespace LetsEncrypt.ACME.Simple
                         var currentExec = Assembly.GetExecutingAssembly().Location;
 
                         // Create an action that will launch the app with the renew parameters whenever the trigger fires
+                        //***TODO: update command to contain ALL necessary params inc. ManualHost, SAN etc
                         task.Actions.Add(new ExecAction(currentExec, $"--renew --baseuri \"{BaseUri}\"",
                             Path.GetDirectoryName(currentExec)));
 
-                        task.Principal.RunLevel = TaskRunLevel.Highest; // need admin
+                        try { 
+                            task.Principal.RunLevel = TaskRunLevel.Highest; // need admin
+                        } catch (Exception voE) {
+                            Console.WriteLine($"Unable to gain Administrative permissions on Task Scheduler.");
+                            Log.Error("Unable to gain Administrative permissions on Task Scheduler. {@voE}", voE);
+                        }
                         Log.Debug("{@task}", task);
 
                         Console.WriteLine($"\nDo you want to specify the user the task will run as? (Y/N) ");
@@ -994,8 +1007,16 @@ namespace LetsEncrypt.ACME.Simple
                             Console.Write("Enter the user's password: ");
                             var password = ReadPassword();
                             Log.Debug("Creating task to run as {username}", username);
-                            taskService.RootFolder.RegisterTaskDefinition(taskName, task, TaskCreation.Create, username,
-                                password, TaskLogonType.Password);
+                            try {
+                                taskService.RootFolder.RegisterTaskDefinition(taskName, task, TaskCreation.Create, username,
+                                    password, TaskLogonType.Password);
+                            } catch (Exception voE) {
+                                taskName = string.Empty;
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine($"User/Password not valid. Unable to create Scheduled Task.");
+                                Console.ResetColor();
+                                Log.Error("Task Scheduler Authentication Error. Message: {@voE}", voE);
+                            }
                         } else {
                             Log.Debug("Creating task to run as current user only when the user is logged on");
                             taskService.RootFolder.RegisterTaskDefinition(taskName, task);
@@ -1005,7 +1026,6 @@ namespace LetsEncrypt.ACME.Simple
                 }
             }
         }
-
 
         public static void ScheduleRenewal(Target target) {
             if (!Options.NoTaskScheduler) {
@@ -1044,15 +1064,14 @@ namespace LetsEncrypt.ACME.Simple
             Log.Information("Checking Renewals");
 
             var renewals = _settings.LoadRenewals();
-            if (renewals.Count == 0)
-            {
+            if (renewals.Count == 0) {
                 Console.WriteLine(" No scheduled renewals found.");
                 Log.Information("No scheduled renewals found.");
+            } else {
+                var now = DateTime.UtcNow;
+                foreach (var renewal in renewals)
+                    ProcessRenewal(renewals, now, renewal);
             }
-
-            var now = DateTime.UtcNow;
-            foreach (var renewal in renewals)
-                ProcessRenewal(renewals, now, renewal);
         }
 
         private static void ProcessRenewal(List<ScheduledRenewal> renewals, DateTime now, ScheduledRenewal renewal)
