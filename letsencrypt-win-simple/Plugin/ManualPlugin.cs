@@ -98,8 +98,8 @@ namespace LetsEncrypt.ACME.Simple
             target.Valid = false;
             if (Program.Options.San && (target.AlternativeNames.Count > 1)) {
                 if (target.WebRootPath.Length > 0) {
-                        //Check that they're the same domains
-                        target.Valid = (Program.Options.ManualHost == target.Host);
+                    //Check that they're the same domains
+                    target.Valid = (Program.Options.ManualHost.Split(',')[0] == target.AlternativeNames[0]);
                 }
 
             } else {
@@ -110,6 +110,10 @@ namespace LetsEncrypt.ACME.Simple
             if (target.Valid ) {
                 Console.WriteLine($" Processing Manual Certificate Renewal...");
                 this.Auto(target);
+            } else {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($" Ignoring Manual Certificate Renewal due to Primary Domain mismatch.");
+                Console.ResetColor();
             }
         }
 
@@ -184,6 +188,7 @@ namespace LetsEncrypt.ACME.Simple
             var directory = Path.GetDirectoryName(answerPath);
             Directory.CreateDirectory(directory);
             File.WriteAllText(answerPath, fileContents);
+
         }
     }
 }

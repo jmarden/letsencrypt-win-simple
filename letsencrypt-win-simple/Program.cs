@@ -126,41 +126,43 @@ namespace LetsEncrypt.ACME.Simple
                             SaveRegistrationToFile(registrationPath);
                             SaveSignerToFile(signer, signerPath);
                         }
-
-                        if (Options.Renew && !Options.ForceRenewal)
-                        {
-                            CheckRenewalsAndWaitForEnterKey();
+                        //Renewals or new grants ?
+                        if (Options.Renew || Options.ForceRenewal) {
+                            if (Options.CloseOnFinish) {
+                                CheckRenewals();
+                            } else {
+                                CheckRenewalsAndWaitForEnterKey();
+                            }
                             return;
 
-                        } else if (Options.ForceRenewal) {
-                            CheckRenewals();
-                        }
-                        //Are we actually done as this was renewals only ?
-                        if (!(!string.IsNullOrEmpty(Options.ManualHost) && Options.Renew)) {
-                            List<Target> targets = GetTargetsSorted();
+                        } else {
+                            //See about getting a new certificate
+                            if (!(!string.IsNullOrEmpty(Options.ManualHost) && Options.Renew)) {
+                                List<Target> targets = GetTargetsSorted();
 
-                            WriteBindings(targets);
+                                WriteBindings(targets);
 
-                            Console.WriteLine();
-                            PrintMenuForPlugins();
+                                Console.WriteLine();
+                                PrintMenuForPlugins();
 
-                            if (string.IsNullOrEmpty(Options.ManualHost)) {
-                                Console.WriteLine(" A: Get certificates for all hosts");
-                                Console.WriteLine(" Q: Quit");
-                                Console.Write("Which host do you want to get a certificate for: ");
-                                var command = ReadCommandFromConsole();
-                                switch (command) {
-                                    case "a":
-                                        GetCertificatesForAllHosts(targets);
-                                        break;
-                                    case "q":
-                                        return;
-                                    default:
-                                        ProcessDefaultCommand(targets, command);
-                                        break;
+                                if (string.IsNullOrEmpty(Options.ManualHost)) {
+                                    Console.WriteLine(" A: Get certificates for all hosts");
+                                    Console.WriteLine(" Q: Quit");
+                                    Console.Write("Which host do you want to get a certificate for: ");
+                                    var command = ReadCommandFromConsole();
+                                    switch (command) {
+                                        case "a":
+                                            GetCertificatesForAllHosts(targets);
+                                            break;
+                                        case "q":
+                                            return;
+                                        default:
+                                            ProcessDefaultCommand(targets, command);
+                                            break;
+                                    }
+                                } else if (ManualSanMode) {
+                                    GetCertificatesForAllHosts(targets);
                                 }
-                            } else if (ManualSanMode) {
-                                GetCertificatesForAllHosts(targets);
                             }
                         }
                     }
@@ -260,7 +262,6 @@ namespace LetsEncrypt.ACME.Simple
             else
             {
                 Target binding = GetBindingBySiteId(targets, targetId);
-                binding.SAN = true;
                 binding.Plugin.Auto(binding);
             }
         }
@@ -607,37 +608,36 @@ namespace LetsEncrypt.ACME.Simple
         public static void Auto(Target binding)
         {
             var auth = Authorize(binding);
+            bool lbSaveCert = true;
+            bool lbInstallCert = true;
+
             if (auth.Status == "valid")
             {
                 var pfxFilename = GetCertificate(binding);
 
-                if (Options.Test && !Options.Renew)
-                {
+                if (!Options.Renew) {
                     if (!ManualSanMode || (ManualSanMode && CentralSsl)) {
                         Console.WriteLine(
                             $"\nDo you want to install the .pfx into the Certificate Store/ Central SSL Store? (Y/N) ");
-                        if (!PromptYesNo())
-                            return;
+                        lbSaveCert = PromptYesNo();
                     }
                 }
 
-                if (!CentralSsl)
-                {
+                if (!CentralSsl && lbSaveCert) {
                     X509Store store;
                     X509Certificate2 certificate;
                     Log.Information("Installing Non-Central SSL Certificate in the certificate store");
                     InstallCertificate(binding, pfxFilename, out store, out certificate);
-                    if (Options.Test && !Options.Renew && !Program.ManualSanMode)
-                    {
+                    if (!Options.Renew && !Program.ManualSanMode) {
                         Console.WriteLine($"\nDo you want to add/update the certificate to your server software? (Y/N) ");
-                        if (!PromptYesNo())
-                            return;
+                        lbInstallCert = PromptYesNo();
                     }
-                    Log.Information("Installing Non-Central SSL Certificate in server software");
-                    binding.Plugin.Install(binding, pfxFilename, store, certificate);
-                    if (!Options.KeepExisting)
-                    {
-                        UninstallCertificate(binding.Host, out store, certificate);
+                    if (lbInstallCert) {
+                        Log.Information("Installing Non-Central SSL Certificate in server software");
+                        binding.Plugin.Install(binding, pfxFilename, store, certificate);
+                        if (!Options.KeepExisting) {
+                            UninstallCertificate(binding.Host, out store, certificate);
+                        }
                     }
                 }
                 else if (!Options.Renew || !Options.KeepExisting)
@@ -647,17 +647,8 @@ namespace LetsEncrypt.ACME.Simple
                     binding.Plugin.Install(binding);
                 }
 
-                if (Options.Test && !Options.Renew && !ManualSanMode)
-                {
-                    Console.WriteLine(
-                        $"\nDo you want to automatically renew this certificate in {RenewalPeriod} days? This will add a task scheduler task. (Y/N) ");
-                    if (!PromptYesNo())
-                        return;
-                }
-
-                if (!Options.Renew)
-                {
-                    Log.Information("Adding renewal for {binding}", binding);
+                if (!Options.Renew) {
+                    Log.Information("Storing renewal details for: {binding}", binding);
                     ScheduleRenewal(binding);
                 }
             }
@@ -950,8 +941,10 @@ namespace LetsEncrypt.ACME.Simple
         }
 
         public static void EnsureTaskScheduler() {
-            var taskName = $"{ClientName} {CleanFileName(BaseUri)}";
+            var taskName = $"{ClientName} Renewal";
+            var lsActionParams = string.Empty;
 
+            taskName = taskName + (Options.Test ? " - Staging" : string.Empty);
             if (!Options.NoTaskScheduler) {
                 using (var taskService = new TaskService()) {
                     bool addTask = true;
@@ -987,9 +980,13 @@ namespace LetsEncrypt.ACME.Simple
                         var currentExec = Assembly.GetExecutingAssembly().Location;
 
                         // Create an action that will launch the app with the renew parameters whenever the trigger fires
-                        //***TODO: update command to contain ALL necessary params inc. ManualHost, SAN etc
-                        task.Actions.Add(new ExecAction(currentExec, $"--renew --baseuri \"{BaseUri}\"",
-                            Path.GetDirectoryName(currentExec)));
+                        lsActionParams = (Options.Test ? "--test" : string.Empty) + " --renew";
+                        //if (Options.ManualHost.Length > 0) {
+                        //    lsActionParams += $" --manualhost \"{BaseUri}\"";
+                        //} else {
+                        //    lsActionParams += $" --baseuri \"{BaseUri}\"";
+                        //}
+                        task.Actions.Add(new ExecAction(currentExec, lsActionParams, Path.GetDirectoryName(currentExec)));
 
                         try { 
                             task.Principal.RunLevel = TaskRunLevel.Highest; // need admin
@@ -1029,7 +1026,13 @@ namespace LetsEncrypt.ACME.Simple
 
         public static void ScheduleRenewal(Target target) {
             if (!Options.NoTaskScheduler) {
-                EnsureTaskScheduler();
+                if (!Options.Renew && !ManualSanMode) {
+                    Console.WriteLine(
+                        $"\nDo you want to automatically renew this certificate in {RenewalPeriod} days? This will add a task scheduler task. (Y/N) ");
+                    if (PromptYesNo()) {
+                        EnsureTaskScheduler();
+                    }
+                }
             }
 
             var renewals = _settings.LoadRenewals();
@@ -1081,10 +1084,15 @@ namespace LetsEncrypt.ACME.Simple
 
             renewal.Renew = Options.ForceRenewal || (renewal.Date < now);
             if (!renewal.Renew) {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($" {renewal.Binding.Host} renewal not required until after {renewal.Date}");
+                Console.ResetColor();
                 return;
             }
-            
+
+            Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($" Renewing certificate for {renewal}");
+            Console.ResetColor();
             Log.Information("Renewing certificate for {renewal}", renewal);
             if (string.IsNullOrWhiteSpace(renewal.CentralSsl))
             {
@@ -1113,6 +1121,15 @@ namespace LetsEncrypt.ACME.Simple
                 //Not using San
                 Options.San = false;
             }
+            Options.ManualHost = string.Empty;
+            if (!string.IsNullOrWhiteSpace(renewal.ManualHost)) {
+                if ((renewal.Binding.AlternativeNames == null) || renewal.Binding.AlternativeNames.Count == 0) {
+                    Options.ManualHost = renewal.ManualHost;
+                } else {
+                    Options.ManualHost = string.Join(",", renewal.Binding.AlternativeNames);
+                }
+            }
+
             if (string.IsNullOrWhiteSpace(renewal.KeepExisting))
             {
                 //Not using KeepExisting
@@ -1128,6 +1145,10 @@ namespace LetsEncrypt.ACME.Simple
                 //Not using KeepExisting
                 Options.KeepExisting = false;
             }
+            //Options.WebRoot = string.Empty;
+            //if (!string.IsNullOrWhiteSpace(renewal.Binding.WebRootPath)) {
+            //    Options.WebRoot = renewal.Binding.WebRootPath;
+            //}
             if (!string.IsNullOrWhiteSpace(renewal.Script))
             {
                 Options.Script = renewal.Script;
