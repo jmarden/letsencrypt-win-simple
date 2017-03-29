@@ -95,27 +95,25 @@ namespace LetsEncrypt.ACME.Simple
         }
 
         public override void Renew(Target target) {
-            string[] lsDomains = new string[0];
-
             target.Valid = false;
-            if (Program.ManualSanMode) {
-                if (target.WebRootPath == Program.Options.WebRoot) {
-                    lsDomains = Program.Options.ManualHost.Split(',');
-                    if (lsDomains.Length > 0 && lsDomains.Length <= 100) {
-                        //Check that they're the same domains
-                        target.Valid = (target.Host == lsDomains[0] &&
-                            string.Join(",", target.AlternativeNames.ToArray()) == Program.Options.ManualHost);
-                    }
+            if (Program.Options.San && (target.AlternativeNames.Count > 1)) {
+                if (target.WebRootPath.Length > 0) {
+                    //Check that they're the same domains
+                    target.Valid = (Program.Options.ManualHost.Split(',')[0] == target.AlternativeNames[0]);
                 }
 
             } else {
                 //Check the renewal relates to the CLI's host and webroot
                 target.Valid = (target.Host == Program.Options.ManualHost &&
-                                    target.WebRootPath == Program.Options.WebRoot);
+                                    target.WebRootPath.Length > 0);
             }
             if (target.Valid ) {
                 Console.WriteLine($" Processing Manual Certificate Renewal...");
                 this.Auto(target);
+            } else {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($" Ignoring Manual Certificate Renewal due to Primary Domain mismatch.");
+                Console.ResetColor();
             }
         }
 
@@ -190,6 +188,7 @@ namespace LetsEncrypt.ACME.Simple
             var directory = Path.GetDirectoryName(answerPath);
             Directory.CreateDirectory(directory);
             File.WriteAllText(answerPath, fileContents);
+
         }
     }
 }

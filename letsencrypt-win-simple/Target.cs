@@ -32,7 +32,6 @@ namespace LetsEncrypt.ACME.Simple
         public List<string> AlternativeNames { get; set; }
         public string PluginName { get; set; } = "IIS";
         public Plugin Plugin => Plugins[PluginName];
-
         public override string ToString() => $"{PluginName} {Host} ({WebRootPath})";
     }
 }
